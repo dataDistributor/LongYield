@@ -1,73 +1,71 @@
-use clap::Parser;
-use std::{sync::{Arc, Mutex}, net::SocketAddr, time::Duration};
-use tokio::time;
+// src/main.rs
 
 mod blockchain;
-mod mempool;
+mod consensus;
+mod consensus_manager;
 mod network;
-mod wallet;
 
-use crate::{
-    blockchain::Blockchain,
-    mempool::Mempool,
-    wallet::Wallet,
-    network::start_p2p_node
-};
-
-#[derive(Parser, Debug)]
-#[command(version, about)]
-struct Args {
-    #[arg(long)] node: bool,
-    #[arg(long)] mine: bool,
-    #[arg(long)] stake: Option<u64>,
-    #[arg(long, default_value = "127.0.0.1:8080")] listen_addr: SocketAddr,
-}
+use blockchain::{Blockchain, Block, Transaction};
+use consensus_manager::{ConsensusManager, ConsensusType};
+use std::env;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+async fn main() {
+    // Parse command-line arguments.
+    let args: Vec<String> = env::args().collect();
+    let mut run_node = false;
+    let mut mine = false;
+    let mut stake = false;
     
-    let blockchain = Arc::new(Mutex::new(Blockchain::new()));
-    let mempool = Arc::new(Mutex::new(Mempool::new()));
-    let wallet = Wallet::new();
-
-    if args.node {
-        println!("Node address: {}", wallet.address());
-        
-        // Start networking
-        let listen_addr = format!("/ip4/{}/tcp/{}", 
-            args.listen_addr.ip(), 
-            args.listen_addr.port()
-        ).parse()?;
-        
-        tokio::spawn(async move {
-            start_p2p_node(listen_addr).await;
-        });
-
-        // Mining loop
-        if args.mine {
-            let blockchain = blockchain.clone();
-            let mempool = mempool.clone();
-            
-            tokio::spawn(async move {
-                let mut interval = time::interval(Duration::from_secs(10));
-                loop {
-                    interval.tick().await;
-                    let mut chain = blockchain.lock().unwrap();
-                    let mut mempool = mempool.lock().unwrap();
-                    
-                    let transactions = mempool.transactions.drain(..).collect();
-                    chain.mine_block(transactions);
-                    println!("Mined block #{}", chain.chain.len());
-                }
-            });
-        }
-
-        // Keep node running
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--node" => run_node = true,
+            "--mine" => mine = true,
+            "--stake" => stake = true,
+            _ => {}
         }
     }
-
-    Ok(())
+    
+    // Start the network node if requested.
+    if run_node {
+        // Adjust the listen address as needed.
+        let listen_addr = "/ip4/127.0.0.1/tcp/4001".parse().unwrap();
+        tokio::spawn(async move {
+            network::start_p2p_node(listen_addr).await;
+        });
+    }
+    
+    // Initialize the blockchain.
+    let mut blockchain = Blockchain::new();
+    
+    // Create a sample transaction.
+    let transactions = vec![
+        Transaction { 
+            from: "Alice".to_string(), 
+            to: "Bob".to_string(), 
+            amount: 50 
+        }
+    ];
+    
+    // Create a new block using the previous block's hash.
+    let previous_hash = blockchain.chain.last().unwrap().hash.clone();
+    let mut block = Block::new(blockchain.chain.len() as u64, previous_hash, transactions);
+    
+    // Initialize the Consensus Manager.
+    let consensus_manager = ConsensusManager::new(4); // PoW difficulty set to 4.
+    
+    // Execute consensus based on the flags.
+    if mine {
+        println!("Executing Proof of Work (PoW) consensus...");
+        consensus_manager.execute(ConsensusType::PoW, &mut block);
+    } else if stake {
+        println!("Executing Proof of Stake (PoS) consensus...");
+        consensus_manager.execute(ConsensusType::PoS, &mut block);
+    } else {
+        println!("Adding block without running consensus...");
+    }
+    
+    // Add the block to the blockchain.
+    blockchain.add_block(block);
+    println!("Blockchain valid: {}", blockchain.is_valid());
 }
