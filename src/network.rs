@@ -1,74 +1,89 @@
 use libp2p::{
     core::upgrade,
     identity,
-    noise,
-    ping,
-    swarm::{Swarm, SwarmEvent, SwarmBuilder},
-    tcp,
-    yamux,
-    Multiaddr,
-    PeerId,
-    Transport,
-    futures::StreamExt,
+    Multiaddr, PeerId, Transport,
+    swarm::{Swarm, SwarmEvent},
 };
-use tokio::runtime::Handle;
+use libp2p_noise::{NoiseConfig, Keypair as NoiseKeypair, X25519Spec};
+use libp2p_ping::{Ping, PingConfig, PingEvent};
+use libp2p_tcp::{Config as TcpConfig, TokioTcpTransport};
+use libp2p_yamux::YamuxConfig;
+use libp2p_swarm_derive::NetworkBehaviour; // For the derive macro
+use futures::prelude::*;
+use tokio::time::Duration;
+
+#[derive(NetworkBehaviour)]
+#[behaviour(out_event = "MyBehaviourEvent")]
+pub struct MyBehaviour {
+    pub ping: Ping,
+}
+
+#[derive(Debug)]
+pub enum MyBehaviourEvent {
+    Ping(PingEvent),
+}
+
+impl From<PingEvent> for MyBehaviourEvent {
+    fn from(event: PingEvent) -> Self {
+        MyBehaviourEvent::Ping(event)
+    }
+}
 
 pub async fn start_p2p_node(listen_addr: Multiaddr) {
-    // Generate a local Ed25519 keypair and derive the peer ID.
+    // Generate a local identity.
     let local_key = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(local_key.public());
+    println!("Local Peer ID: {}", local_peer_id);
 
-    // --- Transport Setup ---
+    // Create TCP transport using Tokio.
+    let tcp_config = TcpConfig::default().nodelay(true);
+    let tcp_transport = TokioTcpTransport::new(tcp_config);
 
-    // Create a TCP transport.
-    let tcp_transport = tcp::TcpConfig::new();
+    // Set up Noise authentication.
+    let noise_keys: NoiseKeypair<X25519Spec> = NoiseKeypair::new();
+    // Bring into scope the trait for into_authentic.
+    use libp2p_noise::AuthenticKeypair;
+    let noise_config = NoiseConfig::xx(
+        noise_keys
+            .into_authentic(&local_key)
+            .expect("Failed to create authenticated noise keys")
+    )
+    .into_authenticated();
 
-    // Prepare the noise authentication.
-    // First, derive the Noise keypair from the local key.
-    let noise_keys = noise::Keypair::<noise::X25519Spec>::new()
-        .into_authentic(&local_key)
-        .expect("Failed to create authentic Noise keys");
+    // Set up multiplexing with Yamux.
+    let yamux_config = YamuxConfig::default();
 
-    // Build the transport by upgrading, authenticating via Noise, and multiplexing with Yamux.
+    // Build the transport.
     let transport = tcp_transport
         .upgrade(upgrade::Version::V1)
-        .authenticate(
-            noise::NoiseConfig::xx(noise_keys)
-                .into_authenticated(),
-        )
-        .multiplex(yamux::YamuxConfig::default())
+        .authenticate(noise_config)
+        .multiplex(yamux_config)
+        .timeout(Duration::from_secs(20))
         .boxed();
 
-    // --- Behavior Setup ---
+    // Create a Ping behaviour.
+    let ping_config = PingConfig::new();
+    let behaviour = MyBehaviour {
+        ping: Ping::new(ping_config),
+    };
 
-    // Create a simple ping behavior.
-    let ping_behavior = ping::Behaviour::new(ping::Config::new());
+    // In libp2p 0.55, Swarm::new now requires a fourth argument: a Swarm configuration.
+    // We use the configuration that disables the executor.
+    let mut swarm = Swarm::new(
+        transport,
+        behaviour,
+        local_peer_id,
+        libp2p::swarm::Config::without_executor(),
+    );
 
-    // --- Swarm Setup ---
+    // Start listening.
+    swarm.listen_on(listen_addr).expect("Failed to listen on address");
 
-    // Build the swarm using SwarmBuilder.
-    // In libp2p-swarm v0.34.0, Swarm::new takes 3 arguments.
-    // To specify an executor, use the builder’s `.executor(...)` method.
-    let mut swarm = SwarmBuilder::new(transport, ping_behavior, local_peer_id)
-        .executor(Box::new(|fut| {
-            // Spawn the future onto the current Tokio runtime.
-            Handle::current().spawn(fut);
-        }))
-        .build();
-
-    // Start listening on the provided multiaddress.
-    swarm.listen_on(listen_addr).expect("Failed to start listener");
-    println!("Peer ID: {}", swarm.local_peer_id());
-
-    // Process swarm events in a loop.
-    loop {
-        match swarm.select_next_some().await {
-            SwarmEvent::NewListenAddr { address, .. } => {
-                println!("Listening on {}", address);
-            }
-            SwarmEvent::Behaviour(event) => {
-                println!("Ping event: {:?}", event);
-            }
+    // Process swarm events.
+    while let Some(event) = swarm.next().await {
+        match event {
+            SwarmEvent::NewListenAddr { address, .. } => println!("Listening on {}", address),
+            SwarmEvent::Behaviour(MyBehaviourEvent::Ping(ev)) => println!("Ping event: {:?}", ev),
             _ => {}
         }
     }

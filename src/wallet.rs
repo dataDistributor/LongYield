@@ -1,22 +1,17 @@
-use ring::signature::{Ed25519KeyPair, KeyPair};
-use rand::RngCore;
-use hex;
+use crate::blockchain::{Blockchain, Transaction};
 
-#[derive(Debug)]
-pub struct Wallet {
-    keypair: Ed25519KeyPair,
-}
-
-impl Wallet {
-    pub fn new() -> Self {
-        let mut rng = rand::thread_rng();
-        let mut seed = [0u8; 32];
-        rng.fill_bytes(&mut seed);
-        let keypair = Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
-        Wallet { keypair }
+/// Computes the balance for the given address by scanning the blockchain.
+pub fn get_balance(blockchain: &Blockchain, address: &str) -> i64 {
+    let mut balance: i64 = 0;
+    for block in &blockchain.chain {
+        for tx in &block.transactions {
+            if tx.from == address {
+                balance -= tx.amount as i64;
+            }
+            if tx.to == address {
+                balance += tx.amount as i64;
+            }
+        }
     }
-
-    pub fn address(&self) -> String {
-        hex::encode(self.keypair.public_key().as_ref())
-    }
+    balance
 }

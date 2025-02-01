@@ -1,15 +1,29 @@
-use crate::mempool::Transaction; // Add this line
+use ed25519_dalek::{Keypair, Signature, Signer, Verifier};
+use rand::rngs::OsRng; // Using OsRng from the rand crate
 
-pub struct ZkProof {
-    pub proof: Vec<u8>, // Simplified for example
+/// Signs the given transaction data with the provided keypair.
+pub fn sign_transaction(keypair: &Keypair, transaction_data: &[u8]) -> Signature {
+    keypair.sign(transaction_data)
 }
 
-pub fn generate_proof(tx: &Transaction) -> ZkProof {
-    // Placeholder: Real implementation would use zk-SNARKs
-    ZkProof { proof: vec![] }
+/// Verifies the transaction signature using the provided public key.
+pub fn verify_transaction(
+    public_key: &ed25519_dalek::PublicKey,
+    transaction_data: &[u8],
+    signature: &Signature,
+) -> bool {
+    public_key.verify(transaction_data, signature).is_ok()
 }
 
-pub fn verify_proof(proof: &ZkProof) -> bool {
-    // Placeholder verification
-    true
+/// A simple wallet that holds an Ed25519 keypair.
+pub struct Wallet {
+    pub keypair: Keypair,
+}
+
+impl Wallet {
+    pub fn new() -> Self {
+        let mut csprng = OsRng {};
+        let keypair = Keypair::generate(&mut csprng);
+        Wallet { keypair }
+    }
 }
