@@ -4,30 +4,13 @@ use libp2p::{
     Multiaddr, PeerId, Transport,
     swarm::{Swarm, SwarmEvent},
 };
-use libp2p_noise::{NoiseConfig, Keypair as NoiseKeypair, X25519Spec};
-use libp2p_ping::{Ping, PingConfig, PingEvent};
-use libp2p_tcp::{Config as TcpConfig, TokioTcpTransport};
-use libp2p_yamux::YamuxConfig;
-use libp2p_swarm_derive::NetworkBehaviour; // For the derive macro
+use libp2p::noise::{NoiseConfig, X25519Spec, Keypair};
+use libp2p::tcp::TokioTcpTransport;
+use libp2p::yamux::YamuxConfig;
+use libp2p::swarm::behaviour::toggle::Toggle;
+use libp2p::ping::Ping;
 use futures::prelude::*;
 use tokio::time::Duration;
-
-#[derive(NetworkBehaviour)]
-#[behaviour(out_event = "MyBehaviourEvent")]
-pub struct MyBehaviour {
-    pub ping: Ping,
-}
-
-#[derive(Debug)]
-pub enum MyBehaviourEvent {
-    Ping(PingEvent),
-}
-
-impl From<PingEvent> for MyBehaviourEvent {
-    fn from(event: PingEvent) -> Self {
-        MyBehaviourEvent::Ping(event)
-    }
-}
 
 pub async fn start_p2p_node(listen_addr: Multiaddr) {
     // Generate a local identity.
@@ -36,17 +19,14 @@ pub async fn start_p2p_node(listen_addr: Multiaddr) {
     println!("Local Peer ID: {}", local_peer_id);
 
     // Create TCP transport using Tokio.
-    let tcp_config = TcpConfig::default().nodelay(true);
-    let tcp_transport = TokioTcpTransport::new(tcp_config);
+    let tcp_transport = TokioTcpTransport::default();
 
     // Set up Noise authentication.
-    let noise_keys: NoiseKeypair<X25519Spec> = NoiseKeypair::new();
-    // Bring into scope the trait for into_authentic.
-    use libp2p_noise::AuthenticKeypair;
+    // Fully qualify the new() call to remove ambiguity.
+    let noise_keys = <libp2p::noise::Keypair<X25519Spec>>::new();
     let noise_config = NoiseConfig::xx(
-        noise_keys
-            .into_authentic(&local_key)
-            .expect("Failed to create authenticated noise keys")
+        noise_keys.into_authentic(&local_key)
+            .expect("Failed to create authenticated noise keys"),
     )
     .into_authenticated();
 
@@ -61,29 +41,21 @@ pub async fn start_p2p_node(listen_addr: Multiaddr) {
         .timeout(Duration::from_secs(20))
         .boxed();
 
-    // Create a Ping behaviour.
-    let ping_config = PingConfig::new();
-    let behaviour = MyBehaviour {
-        ping: Ping::new(ping_config),
-    };
+    // Instead of using Ping, we wrap it in a Toggle and disable it:
+    let behaviour: Toggle<Ping> = Toggle::from(None);
 
-    // In libp2p 0.55, Swarm::new now requires a fourth argument: a Swarm configuration.
-    // We use the configuration that disables the executor.
-    let mut swarm = Swarm::new(
-        transport,
-        behaviour,
-        local_peer_id,
-        libp2p::swarm::Config::without_executor(),
-    );
+    // Build the swarm with the dummy behaviour.
+    let mut swarm = Swarm::new(transport, behaviour, local_peer_id);
 
     // Start listening.
     swarm.listen_on(listen_addr).expect("Failed to listen on address");
 
-    // Process swarm events.
+    // Process swarm events (only listening events, as no behaviour events are produced).
     while let Some(event) = swarm.next().await {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => println!("Listening on {}", address),
-            SwarmEvent::Behaviour(MyBehaviourEvent::Ping(ev)) => println!("Ping event: {:?}", ev),
+            SwarmEvent::NewListenAddr { address, .. } => {
+                println!("Listening on {}", address);
+            }
             _ => {}
         }
     }

@@ -22,7 +22,8 @@ pub struct Wallet {
 
 impl Wallet {
     pub fn new() -> Self {
-        let mut csprng = OsRng {};
+        // Construct OsRng without curly braces.
+        let mut csprng = OsRng;
         let keypair = Keypair::generate(&mut csprng);
         Wallet { keypair }
     }
